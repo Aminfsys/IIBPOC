@@ -1,0 +1,94 @@
+BROKER SCHEMA stw.cfe
+
+
+CREATE COMPUTE MODULE CanonicalRequestHandler_ProcessRequest
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		-- CALL CopyMessageHeaders();
+		-- CALL CopyEntireMessage();
+		RETURN TRUE;
+	END;
+
+
+	/*
+	 * Retrieve data required by canonical processor to post payment to Target and update cash database
+	 * Need to retrive:
+	 *  Daily sequence number (TCH001PAYFILELOG.NO_DAILYSEQ) 
+	 *  Paymemt header for section (only need to do this if a ?? is passed)
+	 * Returns TRUE if data was retrieved, false if not
+	 * TODO: Decide if should return false if daily seq was found but not payment header id when request was to retrieve a header id!
+	 * TODO: Decide whether dateReceived needs to be passed in or whether it should just be retrived from TCH01
+	 *       If retrieved from db then it saves having to include it in the canonical message payload
+	 */
+	CREATE PROCEDURE getPaymentIdentifiers(IN evRef REFERENCE, IN intPayFileLogId INT, IN outSource CHAR, IN dateReceived DATE, IN ignoreHeaders CHAR) RETURNS BOOLEAN
+	BEGIN
+		DECLARE currentDayOfMonth CHAR CAST( EXTRACT(DAY FROM CURRENT_DATE) AS CHAR); -- Needs to be char to use {currentDayOfMonth}
+		DECLARE payFileLogId CHAR CAST(intPayFileLogId AS CHAR); -- Needs to be char to use {payFileLog}
+		-- If ignoreHeaders = 'Y' then it means that as well as not creating payment header records 
+		-- that there is only a single cash item in the file, so there is no point caching identifiers,
+		-- just retrieve them from the database and return.
+		-- Need to rebuild logic below!
+		
+		 
+		-- If data has already been cached TODAY then use that entry
+		IF CACHE.{currentDayOfMonth}.{payFileLogId}.dailySequenceNumber IS NOT NULL THEN
+			SET evRef.dailySequenceNumber = CACHE.{currentDayOfMonth}.{payFileLogId}.dailySequenceNumber;
+			SET evRef.inSource = CACHE.{currentDayOfMonth}.{payFileLogId}.inSource;
+			SET evRef.dateFileReceived = CACHE.{currentDayOfMonth}.{payFileLogId}.dateFileReceived;
+			SET evRef.paymentHeaderId = CACHE.{currentDayOfMonth}.{payFileLogId}.paymentHeaderId;
+			RETURN TRUE;
+		END IF;
+		
+		-- If reach here then no current cache entry found so need to update cache...
+		
+		DECLARE tempRow ROW;
+		
+		-- Get daily seq number from cash database (0 or 1 rows will be returned)
+		SET tempRow.tch001[] = PASSTHRU('select NO_DAILYSEQ,CD_SOURCE, DT_RECEIVED from CHO999.TCH001PAYFILELOG where ID_LOG=?',payFileLogId);
+		IF NOT EXISTS(tempRow.tch001[]) THEN
+			RETURN FALSE;
+		END IF;
+		
+		-- If required, retrieve the payment header id (0 or 1 rows will be returned)
+		IF COALESCE(ignoreHeaders,'') <> 'Y' THEN
+			SET tempRow.tch005[] = PASSTHRU('select ID_HEADER from CHO999.TCH005PAYHEADER WHERE DT_RECEIVED=? and CD_SOURCE=? AND NO_DAILYSEQ=?',
+			                                 dateReceived, outSource, tempRow.tch001.NO_DAILYSEQ);
+			IF NOT EXISTS(tempRow.tch005[]) THEN
+				RETURN FALSE;
+			END IF;		
+		END IF;
+		
+		-- Update cache
+		UpdateCache: BEGIN ATOMIC
+			-- Recheck cache (in case another instance got here first)
+			IF CACHE.{currentDayOfMonth}.{payFileLogId}.dailySequenceNumber IS NOT NULL THEN
+				LEAVE UpdateCache;
+			END IF;
+			
+			--Check if cache is out of date
+			DECLARE cacheCurrentDay CHAR COALESCE(CACHE.currentDay,'0');  -- Needs to be char to use {cacheCurrentDay}
+			IF cacheCurrentDay <> currentDayOfMonth THEN
+				-- Stale cache so reset it
+				SET CACHE.{cacheCurrentDay} = NULL;
+				SET CACHE.currentDay = currentDayOfMonth;
+			END IF;
+			
+			-- Update cache with new data and set evRef fields
+			SET CACHE.{currentDayOfMonth}.{payFileLogId}.dailySequenceNumber = tempRow.tch001.NO_DAILYSEQ;
+			SET CACHE.{currentDayOfMonth}.{payFileLogId}.inSource = tempRow.tch001.NO_DAILYSEQ;
+			SET CACHE.{currentDayOfMonth}.{payFileLogId}.dateFileReceived = tempRow.tch001.CD_SOURCE;
+			SET CACHE.{currentDayOfMonth}.{payFileLogId}.paymentHeaderId = tempRow.tch005.DT_RECEIVED;--TODO: CAST to DATE ?!
+		END;
+	
+		SET evRef.dailySequenceNumber = CACHE.{currentDayOfMonth}.{payFileLogId}.dailySequenceNumber;
+		SET evRef.inSource = CACHE.{currentDayOfMonth}.{payFileLogId}.inSource;
+		SET evRef.dateFileReceived = CACHE.{currentDayOfMonth}.{payFileLogId}.dateFileReceived;
+		SET evRef.paymentHeaderId = CACHE.{currentDayOfMonth}.{payFileLogId}.paymentHeaderId;
+		
+		RETURN TRUE;
+			
+		
+		
+	END;
+
+END MODULE;

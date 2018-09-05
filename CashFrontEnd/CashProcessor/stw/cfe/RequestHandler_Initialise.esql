@@ -1,0 +1,147 @@
+BROKER SCHEMA stw.cfe
+
+CREATE COMPUTE MODULE RequestHandler_Initialise
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+
+		-- Initialise environment variables
+		CALL InitialiseEnvironmentVariables();
+
+		-- Ensure longterm cache is populated
+		CALL LoadCache();
+
+		-- Clean input blob and store in Environment
+		CALL blobToEnvironment();
+		
+		RETURN TRUE;
+			 
+	END;
+
+
+	/*
+	 * blobToEnvironment - procedure to store file blob in environment after cleaning it up ...
+	 * Remove x00 and x1A (EOF) control characters.
+	 * WARNING: This assumes the blob is in a single-byte character format (e.g. CCSID 923 = ISO8859-15) !
+	 * TODO: Decide if a solution that handles multi-byte characters is required
+	 */
+	CREATE PROCEDURE blobToEnvironment() 
+	BEGIN
+		
+		SET  Environment.Variables.fileBlob = TRANSLATE (InputRoot.BLOB.BLOB, 
+											             CAST(x'00' AS BLOB) || CAST(x'1A' AS BLOB), --CAST(x'0D' AS BLOB)  
+											             CAST ('' AS BLOB)) ;
+
+	END;
+
+	/* 
+	 * LoadCache: populate the cache with data from IIB database
+	 * 1. Config data 
+	 * 2. Parser control data 
+	 * 3. File control data 
+	 * 4. Transaction control data
+	 */
+	CREATE PROCEDURE LoadCache()
+	BEGIN
+		DECLARE evRef REFERENCE TO Environment.Variables;
+		
+		-- If cache has already been populated then return as quickly as possible
+		IF CACHE.VALIDATE = FALSE THEN
+			RETURN ;
+		END IF;	
+		
+		-- Load configuration data into cache (procedure will load data if not currently in cache. Returns FALSE if no data found)
+		IF NOT stw.util.CONFIG_IIBLOOKUP(CACHE) THEN
+			SET evRef.Error.type = 99;
+			SET evRef.Error.category = 'CacheError';
+			SET evRef.Error.shortText = 'Failed to load cache';
+			SET evRef.Error.longText  = 'No configuration data found for this application';
+			THROW USER EXCEPTION VALUES ('CacheError');
+		END IF;
+		
+		-- Load parser control data into cache
+		CALL cacheParserControls(evRef);
+		
+		-- Load file control data into cache
+		CALL cacheFileControls(evRef, evRef.currentDate);
+		
+		-- Load transaction control data into cache
+		CALL cacheTransactionControls(evRef, evRef.currentDate);
+		
+		-- Mark cache as fully populated (CACHE.VALIDATE = TRUE)
+		ATO: BEGIN ATOMIC
+			SET CACHE.VALIDATE = FALSE;
+		END; --ATO		
+		
+	END;
+	
+	/* InitialiseEnvironmentVariables: set initial values in environment
+	 *
+	 */
+	CREATE PROCEDURE InitialiseEnvironmentVariables()
+	BEGIN
+		--TODO: Complete!
+	
+		DECLARE rfhRef REFERENCE TO InputRoot.MQRFH2.usr;
+		DECLARE evRef REFERENCE TO Environment;
+		
+		CREATE FIELD Environment.Variables AS evRef;
+		
+		-- Identify request as batch or nrt based on the MQ input queue name
+		IF CONTAINS(InputRoot.MQMD.SourceQueue,'.NRT.') THEN
+			SET evRef.isBatch = 'N';
+		ELSE
+			SET evRef.isBatch = 'Y';
+		END IF;
+	
+		-- Store 'file received date' specified in the request 
+		-- TODO: Decide if processing should fail if a valid date is not received or if it should default to current date
+		SET evRef.dateFileReceived = CAST(rfhRef.CASH_RECEIVED_DATE as DATE);
+		
+		-- Store currentDate
+		-- TODO: Allow override to be set from config data.
+		SET evRef.currentDate = CURRENT_DATE;
+		
+		-- Record cash file name (add BH_RequesterMessageId if present) - maximum 100chars due to db table limit
+		IF COALESCE(TRIM(rfhRef.BH_RequesterMessageId),'') = '' THEN
+			SET evRef.fileName = LEFT(COALESCE(rfhRef.CASH_FILENAME,'Unknown'),100);
+		ELSE
+			SET evRef.fileName = LEFT(COALESCE(rfhRef.CASH_FILENAME,'Unknown') || '_' || TRIM(rfhRef.BH_RequesterMessageId),100);
+		END IF;
+	
+		-- Extract duplicate check settings from request message
+		-- Remove spaces; convert ',' characters to '|'; make uppercase; if not defined set to 'N'; add '|' prefix and '|' suffix !
+		SET evRef.disableDuplicateCheck = '|' || COALESCE(UPPER(REPLACE(REPLACE(rfhRef.CASH_DISABLE_DUPLICATE_CH,' ',''),',','|')),'N') || '|';
+		
+		-- Identify the type of processing requested for the file
+		CASE 
+		WHEN COALESCE(rfhRef.BH_Mode,'') = 'VALIDATE' THEN
+			SET evRef.runMode = 'V'; -- validate file only
+		WHEN evRef.disableDuplicateCheck = 'N' THEN 
+			SET evRef.runMode = 'D'; -- process duplicate
+		ELSE
+			SET evRef.runMode = 'N'; -- normal processing
+		END CASE;
+	
+		-- Store application identifiers from request message
+		SET evRef.sourceApplicationName = COALESCE(rfhRef.BH_SourceApp,'Unknown');
+		SET evRef.sourceApplicationID   = COALESCE(rfhRef.BH_ApplicationID,'Unknown');
+		
+		-- Identify payment source from rfh.usr.BH_Class 
+		SET evRef.inSource = IdentifyInSource(rfhRef.BH_Class);
+	
+		-- TODO: Copy BH_UserId to evRef
+		-- TODO: Copy transaction ids to evRef
+		
+		-- Copy MQRFH.usr folder to environment
+		-- TODO: Remove this once all necessary fields have been coded into evRef
+		SET evRef.usr.*[] = rfhRef.*[];
+		
+		-- Initialise file level counters of cash items
+		SET evRef.itemCount      = 0; -- Total number of cash items in file
+		SET evRef.submittedCount = 0; -- Number of cash items to be submitted to Target
+		SET evRef.discardCount   = 0; -- Number of cash items to be discarded (not sent to Target)	
+		
+		
+	END;
+	
+END MODULE;

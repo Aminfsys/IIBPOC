@@ -1,0 +1,33 @@
+BROKER SCHEMA stw.cfe
+
+
+CREATE DATABASE MODULE RequestHandler_LogNewCashFile
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		
+		DECLARE evRef REFERENCE TO Environment;
+		CREATE FIELD Environment.Variables as evRef;
+		
+		-- Get a sequence number (unique id) for the file for use when inserting to cash table TCH001
+		-- NB uses Oracle SELECT QCH001PAYFILELOG.nextval FROM DUAL - Oracle sequences ignore transactionality 
+		-- So we don't have to worry about rollbacks or row locking
+		SET evRef.fileId = GetNextSequence('QCH001PAYFILELOG');	
+		
+		-- Insert initial file details into TCH001
+		INSERT INTO Database.TCH001PAYFILELOG (
+					ID_LOG,
+					NM_FILE,
+					CD_VALIDATION,
+					TS_RECEIVED,
+					TP_RUN
+		  ) VALUES (
+		  			evRef.fileId,
+		  			COALESCE(LEFT(Root.MQRFH2.usr.CASH_FILENAME,100),'Unknown'),
+		  			-1,
+		  			CURRENT_TIMESTAMP,
+		  			evRef.runMode
+		  );	
+		RETURN TRUE;
+	END;
+
+END MODULE;

@@ -1,0 +1,154 @@
+BROKER SCHEMA stw.cfe
+
+
+CREATE DATABASE MODULE RequestHandler_UpdateCashTables
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		DECLARE evRef REFERENCE TO Environment.Variables;
+		DECLARE tsCurrent TIMESTAMP CURRENT_TIMESTAMP;  --TODO: Check if this timestamp is the correct one to use!
+
+		-- If this was a validation run only then ensure that a daily sequence number is not allocated and clear some fields before updating database
+		IF evRef.runMode='V' THEN -- Validation Only, so nothing to be submitted to Target 
+			SET tsCurrent=NULL;
+			SET evRef.dailySequenceNumber = 0; -- do not set sequence number
+			SET evRef.discardCount = 0;
+			SET evRef.submittedCount = 0;
+		ELSE 
+			CALL AllocateDailySequenceNumber(evRef);
+		END IF; 
+		
+		/*
+		 * Update TCH001 - file log	
+		 * NB need to identify outSource to be used in update TCH001:
+		 * For files that can have multiple sections, use the inSource 
+		 * Otherwise use the outSource specified in the section data.
+		 */
+		DECLARE tch001Source CHAR evRef.inSource;
+		IF evRef.parserControl.multisection = 'N' THEN
+			SET tch001Source = evRef.section.outSource;
+		END IF;
+		
+		-- 
+		UPDATE Database.TCH001PAYFILELOG AS p
+		  SET CD_SOURCE=tch001Source,
+		      DT_RECEIVED=evRef.dateFileReceived, -- use received date specified in original request
+		      NO_DAILYSEQ=evRef.dailySequenceNumber,
+			  TS_VALIDATED=evRef.validationTimestamp,
+			  CD_VALIDATION=0, -- File must be valid if we've reached this point
+			  NO_ITEMS=evRef.itemCount,
+			  NO_BATCHES=evRef.submittedCount, -- Cash items are always submitted individually so #batches = #items submitted
+			  NO_ITEMS_SUBMITTED=evRef.submittedCount,
+			  TS_BATCH_START=tsCurrent,
+			  TP_RUN=evRef.runMode,
+			  NO_DISCARDS=evRef.discardCount
+		WHERE p.ID_LOG=evRef.fileId;
+		
+		-- If this is a validation run then no further cash tables should be updated.
+		IF evRef.runMode='V' THEN 
+			RETURN TRUE;
+		END IF;
+
+
+		-- Update remaining cash tables
+		FOR sectionRef AS evRef.section[] DO
+	
+			-- Insert TCH002 (one row per section) - totals for the whole input file record
+			INSERT INTO Database.TCH002PAYFILESUMM (
+				 DT_RECEIVED, 
+				 CD_SOURCE,
+				 NO_DAILYSEQ,
+				 NO_COMBINE_002,
+				 NM_FILE,
+				 TS_PROCESSED,
+				 DT_FILE,
+				 NO_PROCESSING_TIME,
+				 IND_SUCCESS, 
+				 IND_OVERRIDE, 
+				 AM_CREDIT,
+				 NO_CREDIT,
+				 AM_DEBIT,
+				 NO_DEBIT,
+				 DOC_PAYMENT_FILE)
+			VALUES (
+				 evRef.dateFileReceived,
+				 sectionRef.outSource,
+			   	 evRef.dailySequenceNumber,
+			   	 GetNextSequence('QCH002PAYFILESUMM'),
+		   		 evRef.fileName,
+				 CURRENT_TIMESTAMP,
+				 evRef.dateFileReceived,
+				 0, --NO_PROCESSING_TIME - not used
+				'Y',
+			 	 sectionRef.disableDuplicateCheck,
+				 CAST(sectionRef.calculated.CreditAmount AS DECIMAL (11,2)) / 100, --AM_CREDIT in pounds sterling
+				 CAST(sectionRef.calculated.CreditCount AS DECIMAL (9,0)),         -- NO_CREDIT
+				 CAST(sectionRef.calculated.DebitAmount AS DECIMAL (11,2)) / 100,  --AM_DEBIT in pounds sterling
+				 CAST(sectionRef.calculated.DebitCount AS DECIMAL (9,0)),        --NO_DEBIT
+				 evRef.fileBlob);
+
+			-- Insert TCH003 (one row per section) -  totals per section record
+			INSERT INTO Database.TCH003PAYDESTSUMM (
+				 DT_RECEIVED, 
+				 CD_SOURCE,
+				 NO_DAILYSEQ,
+				 CD_DESTINATION,
+				 NO_DEST_SEQ,
+				 AM_CREDIT,
+				 NO_CREDIT,
+				 AM_DEBIT,
+				 NO_DEBIT)
+			VALUES (
+				 evRef.dateFileReceived,
+				 sectionRef.outSource,
+			   	 evRef.dailySequenceNumber,
+				 sectionRef.destination, 
+		      	 evRef.dailySequenceNumber,
+				 CAST(sectionRef.calculated.CreditAmount AS DECIMAL (11,2)) / 100, --AM_CREDIT in pounds sterling
+				 CAST(sectionRef.calculated.CreditCount AS DECIMAL (9,0)),         -- NO_CREDIT
+				 CAST(sectionRef.calculated.DebitAmount AS DECIMAL (11,2)) / 100,  --AM_DEBIT in pounds sterling
+				 CAST(sectionRef.calculated.DebitCount AS DECIMAL (9,0)));        --NO_DEBIT
+				  
+			--Insert header/trailers into TCH005 
+			FOR headerRef AS sectionRef.header[] DO
+				INSERT INTO Database.TCH005PAYHEADER (
+				     ID_HEADER,
+				     DT_RECEIVED,
+				     CD_SOURCE,
+				     NO_DAILYSEQ,
+				     NO_PAYMENT_HDR,
+				     NM_MESSAGE_TYPE,
+				     TXT_RAW_HEADER)
+				VALUES (
+				     GetNextSequence('QCH005PAYHEADER'),
+					 evRef.dateFileReceived,
+					 sectionRef.outSource,
+			  		 evRef.dailySequenceNumber,
+					 1,
+					 headerRef.name,
+					 headerRef.raw);					
+			END FOR;
+			FOR trailerRef AS sectionRef.trailer[] DO
+				INSERT INTO Database.TCH005PAYHEADER (
+				     ID_HEADER,
+				     DT_RECEIVED,
+				     CD_SOURCE,
+				     NO_DAILYSEQ,
+				     NO_PAYMENT_HDR,
+				     NM_MESSAGE_TYPE,
+				     TXT_RAW_HEADER)
+				VALUES (
+				     GetNextSequence('QCH005PAYHEADER'),
+					 evRef.dateFileReceived,
+					 sectionRef.outSource,
+			  		 evRef.dailySequenceNumber,
+					 1,
+					 trailerRef.name,
+					 trailerRef.raw);					
+			END FOR;
+		
+		END FOR;
+		
+		RETURN TRUE;
+	END;
+
+END MODULE;

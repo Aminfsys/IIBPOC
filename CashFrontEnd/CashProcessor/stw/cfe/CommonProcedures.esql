@@ -1,0 +1,376 @@
+BROKER SCHEMA stw.cfe
+
+DECLARE CACHE SHARED ROW; -- For caching configuration data and cash control data (mastered in database)
+
+/* cacheParserControls: 
+ * Load and cache parser control information for file from -new table-
+ * TODO: Create new table!
+ */
+CREATE PROCEDURE cacheParserControls(IN evRef REFERENCE) 
+BEGIN
+	DECLARE tempRow ROW;
+	DECLARE parserControlsRef REFERENCE TO CACHE;
+	
+	-- Check whether data has already been loaded. If so can return here.
+	IF CACHE.parserControls.isLoaded = TRUE THEN
+		RETURN ;
+	END IF;
+						   	  
+--	--TODO: Uncomment code below once new table is in place!				   	  
+--  	SET temprow.data[] = PASSTHRU('SELECT PARSER,ALLOW_MULTI_SECTION,CHECK_DUPLICATES FROM EIO999.CASH_PARSER_CONTROLS ');
+
+	--TODO: Remove code below once new parser control table has been implemented
+	SET tempRow.data[] = LIST{
+				ROW('SS  ' AS SOURCE_IN, 'SelfServiceNoSchema'  AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'N' AS CHECK_DUPLICATES), 
+				ROW('SZ  ' AS SOURCE_IN, 'SelfService'          AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'N' AS CHECK_DUPLICATES),
+				ROW('LF  ' AS SOURCE_IN, 'Lloyds'               AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'Y' AS CHECK_DUPLICATES),
+				ROW('BA  ' AS SOURCE_IN, 'Barclays'             AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'Y' AS CHECK_DUPLICATES),
+				ROW('BS  ' AS SOURCE_IN, 'Barclays'             AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'Y' AS CHECK_DUPLICATES),
+				ROW('PY  ' AS SOURCE_IN, 'DebtorAgency'         AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'Y' AS CHECK_DUPLICATES),
+				ROW('JV  ' AS SOURCE_IN, 'ExtendedDebtorAgency' AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'Y' AS CHECK_DUPLICATES),
+				ROW('PP  ' AS SOURCE_IN, 'PayPoint'             AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'Y' AS CHECK_DUPLICATES),
+				ROW('DP  ' AS SOURCE_IN, 'DWP'                  AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'Y' AS CHECK_DUPLICATES),
+				ROW('AL  ' AS SOURCE_IN, 'Girobank'             AS PARSER, 'Y' AS ALLOW_MULTI_SECTION, 'Y' AS CHECK_DUPLICATES),
+				ROW('FL  ' AS SOURCE_IN, 'Fluency'              AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'Y' AS CHECK_DUPLICATES),
+				ROW('PL  ' AS SOURCE_IN, 'STWPostal'            AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'Y' AS CHECK_DUPLICATES),
+				ROW('MW  ' AS SOURCE_IN, 'STWPostal'            AS PARSER, 'N' AS ALLOW_MULTI_SECTION, 'Y' AS CHECK_DUPLICATES)
+				};
+	-- End of temporary code to remove
+	
+	IF NOT EXISTS(tempRow.data[]) THEN
+		-- Generate error
+		SET evRef.Error.type = 99;
+		SET evRef.Error.category = 'ParserControlError';
+		SET evRef.Error.shortText = 'No parser controls found in database';
+		THROW USER EXCEPTION VALUES ('ParserControlError');
+	END IF;	
+	
+	ATO: BEGIN ATOMIC
+		-- Redo check to see if data has already been loaded (in case thread was queued up)
+		IF CACHE.parserControls.isLoaded = TRUE THEN
+			RETURN ;
+		END IF;
+		CREATE FIELD CACHE.parserControls AS parserControlsRef;
+		FOR itemRef AS tempRow.data[] DO
+			SET parserControlsRef.{itemRef.SOURCE_IN}.parser = itemRef.PARSER;
+			SET parserControlsRef.{itemRef.SOURCE_IN}.multisection = itemRef.ALLOW_MULTI_SECTION;
+			SET parserControlsRef.{itemRef.SOURCE_IN}.checkDuplicates = itemRef.CHECK_DUPLICATES;
+		END FOR;
+		SET parserControlsRef.isLoaded = TRUE;
+	END; --ATO
+	
+END;
+
+/* cacheFileControls: 
+ * Load relevant payment file controls data from TCH008 (to avoid keep calling the database) into
+ * CACHE shared variable for long-term storage
+ */
+CREATE PROCEDURE cacheFileControls(IN evRef REFERENCE, IN currentDate DATE) 
+BEGIN
+
+	DECLARE temprow ROW;
+	DECLARE fileControlsRef REFERENCE TO CACHE;
+	
+	-- Check whether data has already been loaded. If so can return here.
+	IF CACHE.fileControls.isLoaded = TRUE THEN
+		RETURN ;
+	END IF;
+						   	  
+  	SET temprow.data[] = PASSTHRU('SELECT CD_SOURCE, NM_SUBSECTION, CD_OUT_SOURCE, CD_DESTINATION
+							   	  FROM EIO999.TCH008payfilectrl
+							   	  WHERE ? BETWEEN DT_ACTIVE_FROM AND DT_ACTIVE_TO',
+							   	  currentDate);
+	IF NOT EXISTS(temprow.data[]) THEN
+		-- Generate validation error
+		SET evRef.Error.type = 99;
+		SET evRef.Error.category = 'FileControlError';
+		SET evRef.Error.shortText = 'No payment file controls found in database';
+		THROW USER EXCEPTION VALUES ('FileControlError');
+	END IF;	
+	
+	ATO: BEGIN ATOMIC
+		-- Redo check to see if data has already been loaded (in case thread was queued up)
+		IF CACHE.fileControls.isLoaded = TRUE THEN
+			RETURN ;
+		END IF;
+		CREATE FIELD CACHE.fileControls AS fileControlsRef;
+		FOR itemRef AS temprow.data[] DO
+			SET fileControlsRef.{itemRef.CD_SOURCE}.{itemRef.NM_SUBSECTION}.outSource = itemRef.CD_OUT_SOURCE;
+			SET fileControlsRef.{itemRef.CD_SOURCE}.{itemRef.NM_SUBSECTION}.destination = itemRef.CD_DESTINATION;
+		END FOR;
+		SET fileControlsRef.isLoaded = TRUE;
+	END; --ATO
+	
+END;
+
+/* cacheTransactionControls: 
+ * Load and cache relevant transaction type controls data from TCH017 (to avoid keep calling the database)
+ * CACHE is a long-term SHARED variable.
+ */
+
+CREATE PROCEDURE cacheTransactionControls(IN evRef REFERENCE, IN currentDate DATE) 
+BEGIN
+	--NB Procedure assumes no null values are passed (no checks carried out!)
+	DECLARE temprow ROW;
+	DECLARE txControlsRef REFERENCE TO CACHE;
+	
+	-- Check whether data has already been loaded. If so can return here.
+	IF CACHE.txControls.isLoaded = TRUE THEN
+		RETURN ;
+	END IF;		
+	-- trim TXN_CODE to allow easy searching when data is stored in environment
+  	SET temprow.data[] = PASSTHRU('SELECT TP_TRANS, TRIM(TXN_CODE) AS TXN_CODE, PYMNT_TYP, IND_RECEIPT, FG_DISCARD, IND_CR_DB 
+							 	  FROM EIO999.TCH017XACTTYPEXREF WHERE TP_TRANS IN
+							 	  ( SELECT CD_OUT_SOURCE FROM EIO999.TCH008payfilectrl WHERE ? BETWEEN DT_ACTIVE_FROM AND DT_ACTIVE_TO )',
+							   	  currentDate);
+
+	IF NOT EXISTS(temprow.data[]) THEN
+		-- Generate validation error
+		SET evRef.Error.type = 99;
+		SET evRef.Error.category = 'TransactionControlError';
+		SET evRef.Error.shortText = 'No transaction controls found in database';
+		THROW USER EXCEPTION VALUES ('TransactionControlError');
+	END IF;	
+
+	ATO: BEGIN ATOMIC
+		-- Redo check to see if data has already been loaded (in case thread was queued up)
+		IF CACHE.txControls.isLoaded = TRUE THEN
+			RETURN ;
+		END IF;
+		CREATE FIELD CACHE.txControls AS txControlsRef;
+		FOR itemRef AS temprow.data[] DO
+			SET txControlsRef.{itemRef.TP_TRANS}.{itemRef.TXN_CODE}.paymentType = itemRef.PYMNT_TYP;
+			SET txControlsRef.{itemRef.TP_TRANS}.{itemRef.TXN_CODE}.receipt     = COALESCE(itemRef.IND_RECEIPT,'N');
+			SET txControlsRef.{itemRef.TP_TRANS}.{itemRef.TXN_CODE}.discard     = COALESCE(itemRef.FG_DISCARD,'N');
+			SET txControlsRef.{itemRef.TP_TRANS}.{itemRef.TXN_CODE}.creditDebit = itemRef.IND_CR_DB;
+		END FOR;
+		SET txControlsRef.isLoaded=TRUE;
+	END; -- ATO
+
+	
+END;
+
+
+/* GetNextSequence
+ * Common routine to get the next sequence number from an Oracle sequence (name provided as parameter)
+ * As Oracle does not support 'auto index' when inserting new records into tables.
+ */
+CREATE PROCEDURE GetNextSequence(IN seqName CHAR) RETURNS INT
+BEGIN
+	DECLARE seq ROW;
+	SET seq = PASSTHRU ('SELECT ' || seqName || '.nextval FROM DUAL');
+	RETURN CAST(seq.NEXTVAL AS INT);
+END;
+
+
+/*
+ * AllocateDailySequenceNumber
+ * Get the next daily sequence number for a specific source and date (dateFileReceived)
+ * Coded to ensure a contiguous number range is generated when there are multiple instances of
+ * the message flow running over multilple IIB nodes.
+ * NB This procedure locks the relevant row in the daily sequence table so ensure
+ * it is called as late as possible in message flow processing!
+ */
+CREATE PROCEDURE AllocateDailySequenceNumber(IN evRef REFERENCE)
+BEGIN
+	DECLARE seq INT;
+	
+	SET seq = SelectDailySequenceForUpdate(evRef.inSource, evRef.dateFileReceived);
+	IF seq IS NULL THEN
+		-- No sequence number was found so try to create a new one
+		SET seq = 1;
+		CALL CreateDailySequence(evRef, evRef.inSource, evRef.dateFileReceived);
+	ELSE
+		-- existing sequence number was found (and row locked) - increment by 1
+		SET seq = seq +1;
+		CALL UpdateDailySequence(evRef.inSource, evRef.dateFileReceived, seq);
+	END IF; 
+	
+	SET evRef.dailySequenceNumber = seq;
+
+END;
+/* SelectDailySequenceForUpdate - lock the row containing daily sequence number for source specified in procedure
+ * Using select for update ensures that the daily sequence number for the specified source is locked to this instance of the message flow
+ * If this instance manages to get the lock then it will be held until the message flow ends (need to ensure that any operations
+ * beyond this are kept to a minimum to avoid locking for too long!).
+ * This mechanism avoids multiple threads updating the entry at the same time.
+ * If the row cannot be locked within 5 seconds then an exception will be generated - it is assumed that locks will be release in much
+ * shorter times than this!
+ * Routine will return NULL if no daily sequence number was found for the specified source.
+ */
+CREATE PROCEDURE SelectDailySequenceForUpdate(IN source CHAR, IN dateReceived DATE) RETURNS INT
+BEGIN
+	DECLARE tempRow ROW;
+	SET tempRow.x[] = PASSTHRU('select NO_SEQUENCE from CHO999.TCH010DAILYSEQ where CD_SOURCE=? AND DT_RECEIVED=? for update WAIT 5',
+	                       source, dateReceived);
+	
+	RETURN CAST(tempRow.x.NO_SEQUENCE AS INT);
+END; 
+/* CreateDailySequence - create new daily sequence number for source specified
+ * Attempts to create a new daily  sequence number (on the assumption that a previous call identified that there was none)
+ * If the insert fails because a row exists then an attempt is made to select for update (in order to lock the row). This
+ * covers the scenario where another instance of the message flow has created a new daily sequence number.
+ */
+CREATE PROCEDURE CreateDailySequence(IN evRef REFERENCE, IN source CHAR, IN dateReceived DATE)
+BEGIN
+	DECLARE EXIT HANDLER FOR SQLSTATE 'D23000' -- handle unique constraint violation
+	BEGIN
+		DECLARE sqlResult ROW;  --For debugging: to expose value
+		SET sqlResult.err[] = LIST{SQLCODE,SQLNATIVEERROR,SQLSTATE,SQLERRORTEXT};
+
+		DECLARE seqNum INT;
+		SET seqNum = SelectDailySequenceForUpdate(source, dateReceived);
+		IF seqNum IS NULL THEN
+			SET evRef.Error.type = 99;
+			SET evRef.Error.category = 'DailySequenceError';
+			SET evRef.Error.shortText = 'Failed to create new daily sequence number for source '||COALESCE(source,'NULL');
+			SET evRef.Error.longText  = 'Unique constraint violation - daily sequence number already created';
+			THROW USER EXCEPTION VALUES ('DailySequenceError');
+		END IF;
+	END;	
+	PASSTHRU('insert into CHO999.TCH010DAILYSEQ (CD_SOURCE, DT_RECEIVED, NO_SEQUENCE) VALUES(?,?,?)', 
+	         source, dateReceived, 1);
+END;
+/* UpdateDailySequence - update daily sequence number with supplied value for source specified
+ * 
+ */
+CREATE PROCEDURE UpdateDailySequence(IN source CHAR, IN dateReceived DATE, IN seqNum INT) 
+BEGIN
+	PASSTHRU('update CHO999.TCH010DAILYSEQ SET NO_SEQUENCE = ? where CD_SOURCE=? AND DT_RECEIVED=?', 
+		          seqNum, source, dateReceived);
+END; 
+
+/* 
+ * IdentifyInSource: 
+ * Identify payment source from supplied BH_CLASS string - this is usually value following the second / within the string 
+ * TODO: Add validation checks!
+ */
+CREATE PROCEDURE IdentifyInSource(IN bhclass CHAR) RETURNS CHAR
+BEGIN
+	DECLARE inSource CHAR;
+	
+	IF POSITION('/' IN bhclass REPEAT 3) < 1 THEN
+		SET inSource = SUBSTRING(bhclass FROM (POSITION('/' IN bhclass REPEAT +2)+1) FOR 2);
+	ELSE	
+		SET inSource = SUBSTRING(bhclass FROM (POSITION('/' IN bhclass REPEAT +2)+1) 
+	  		FOR ((POSITION('/' IN bhclass REPEAT 3)-(POSITION('/' IN bhclass REPEAT 2))-1)));
+	END IF;
+	
+	-- Handle special cases where multiple sources share the same file format (need to get rid of this going forwards!)
+	IF inSource IN ('DA','CS','ED') 
+	THEN
+		SET inSource = RIGHT(bhclass ,2);
+	END IF;			
+	
+	-- Pad inSource with spaces to max of 4 chars - required to cater for database holding this data in CHAR rather than VARCHAR2 format
+	SET inSource = OVERLAY('    ' PLACING inSource FROM 1); -- alternative: SUBSTRING(evRef.inSource||'    ' FROM 1 FOR 4);
+	
+	RETURN inSource;
+END;
+
+
+/* CheckSectionsForDuplicates
+ * Loop through all sections in file checking for duplicates on the cash database
+ * If a duplicate is found on a section where ignoreDuplicates is FALSE or NULL then an exception is generated
+ * NB Functionality is slightly different from Brk7... if disableDuplicateCheck is 'Y' for a specific section
+ * then no duplicate checking is carried out. In Brk7 a duplicate check would still be carried out, but it
+ * would only generate an exception if a duplicate was NOT found!
+ * NB Logic is written as nested IF statements inorder to deal with unexpected values for checkForDuplicates and disableDuplicateCheck
+ */
+ 
+CREATE PROCEDURE CheckFileForDuplicates(IN evRef REFERENCE)
+BEGIN
+	DECLARE isDuplicate BOOLEAN FALSE;
+	DECLARE errDescription CHAR '';
+	
+	IF evRef.parserControls.checkDuplicates = 'N' THEN
+		-- parser control says this source type does not use duplicate checking
+		RETURN;
+	END IF;
+	
+	FOR sectionRef AS evRef.section[] DO
+		
+		CASE 
+		WHEN CONTAINS(evRef.disableDuplicateCheck,'|Y|') OR CONTAINS(evRef.disableDuplicateCheck,'|'||TRIM(sectionRef.outSource)||'|') THEN
+			SET sectionRef.isDuplicate = 'X'; -- (X = duplicate check disabled for this section)
+		ELSE 
+			-- Default action (disableDuplicateCheck <> 'Y' (should only be 'N', but just in-case !)
+			IF CheckSectionForDuplicates(evRef, sectionRef) = TRUE THEN
+				SET isDuplicate = TRUE;
+				SET sectionRef.isDuplicate = 'Y'; -- (Y = yes - a duplicate)
+				SET errDescription = errDescription || '[' || sectionRef.outSource || ']' 
+				                     || 'CreditAmount:' || CAST(CAST(sectionRef.calculated.CreditAmount AS DECIMAL (11,2)) / 100 AS CHAR)
+				                     || ' CreditCount:' || CAST(sectionRef.calculated.CreditCount AS CHAR)
+				                     || ' DebitAmount:' || CAST(CAST(sectionRef.calculated.DebitAmount AS DECIMAL (11,2)) / 100 AS CHAR)
+				                     || ' DebitCount:'  || CAST(sectionRef.calculated.DebitCount AS CHAR);
+
+				                     
+			ELSE 
+				SET sectionRef.isDuplicate = 'N'; -- (N = No - not a duplicate)
+			END IF;
+		END CASE; 
+		
+	END FOR;
+	
+	IF NOT isDuplicate THEN
+		RETURN; -- no duplicates found
+	END IF;
+	
+	-- Generate duplicate error
+	SET evRef.Error.type = 40;
+	SET evRef.Error.category = 'DuplicateError';
+	SET evRef.Error.shortText = 'Duplicate Batch Detected';
+	SET evRef.Error.longText = errDescription;
+	THROW USER EXCEPTION VALUES ('DuplicateError');
+	
+END;
+
+CREATE PROCEDURE CheckSectionForDuplicates(IN evRef REFERENCE, IN sectionRef REFERENCE) RETURNS BOOLEAN
+BEGIN
+	DECLARE tempRow ROW;
+
+	--Simple check: check totals to see if there is an existing entry with the same values
+	SET tempRow.tch002 = PASSTHRU('select DT_RECEIVED, NO_DAILYSEQ from CHO999.TCH002PAYFILESUMM 
+                           where CD_SOURCE=? and AM_CREDIT=? and NO_CREDIT=? and AM_DEBIT=? and NO_DEBIT=?',
+							sectionRef.outSource,
+							CAST(sectionRef.calculated.CreditAmount AS DECIMAL (11,2)) / 100, --AM_CREDIT in pounds sterling
+							CAST(sectionRef.calculated.CreditCount AS DECIMAL (9,0)),         -- NO_CREDIT
+							CAST(sectionRef.calculated.DebitAmount AS DECIMAL (11,2)) / 100,  --AM_DEBIT in pounds sterling
+							CAST(sectionRef.calculated.DebitCount AS DECIMAL (9,0)));          --NO_DEBIT
+							
+	IF NOT EXISTS(tempRow.tch002[]) THEN
+		RETURN FALSE; -- no duplicate found!
+	END IF;
+	
+	-- Advanced check: check that the first payment record in the new file matches the one in the database
+	IF sectionRef.firstPayment.isSet = FALSE THEN 
+		--No identifiable payment items in the current section so have to report duplicate found  
+		RETURN TRUE;
+	END IF;
+	FOR tch002 AS tempRow.tch002[] DO
+
+		SET tempRow.tch004 = PASSTHRU('select ID_RECORD from cho999.tch004payrecord where 
+		                               DT_RECEIVED=? and CD_SOURCE=? and NO_DAILYSEQ=? and AM_VALUE=? AND DT_PAYMENT=?',
+		                              tch002.DT_RECEIVED,
+		                              sectionRef.outSource,
+		                              tch002.NO_DAILYSEQ,
+		                              CAST(sectionRef.firstPayment.Amount AS DECIMAL (11,2)) / 100,
+		                              sectionRef.firstPayment.PaymentDate);
+      	/* TODO: Check whether it is safe to include TXT_SOURCEREF/Account is search parameters!
+		SET tempRow.tch004 = PASSTHRU('select ID_RECORD from cho999.tch004payrecord where 
+		                               DT_RECEIVED=? and CD_SOURCE=? and NO_DAILYSEQ=? and TXT_SOURCEREF=? and AM_VALUE=? AND DT_PAYMENT=?',
+		                              tch002.DT_RECEIVED,
+		                              tch002.NO_DAILYSEQ,
+		                              sectionRef.outSource,
+		                              sectionRef.firstPayment.Account,
+		                              sectionRef.firstPayment.Amount,
+		                              sectionRef.firstPayment.PaymentDate);
+		*/
+		IF EXISTS(tempRow.tch004[]) THEN 
+			RETURN TRUE; -- duplicate found!
+		END IF;
+		
+	END FOR;
+	
+	RETURN FALSE; -- No real duplicates found
+END;

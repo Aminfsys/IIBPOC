@@ -1,0 +1,15 @@
+BROKER SCHEMA stw.cfe
+
+
+CREATE COMPUTE MODULE RequestHandler_ProcessFile
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		CALL stw.cfe.formats.ParseFile(CACHE, Environment.Variables, OutputRoot); -- Parse cash file using relevant parser
+		
+		CALL CheckFileForDuplicates(Environment.Variables); --Check for duplicates
+
+		RETURN TRUE;
+		
+	END;
+
+END MODULE;

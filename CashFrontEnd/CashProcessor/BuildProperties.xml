@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<config>
+  <deployAsSource>true</deployAsSource>
+  <dependencies>
+    <dependency type="StaticLibrary" name="ErrorHandling" version="v1.04.00"/>
+    <dependency type="StaticLibrary" name="Utilities" version="v1.00.04"/>
+    <dependency type="SharedLibrary" name="CashFileFormats" branch="trunk"/>
+  </dependencies>
+  <barOverrides>
+      <override uri="stw.cfe.Batch#additionalInstances" default="0" token="CFE.Batch.additionalInstances"/>
+      <override uri="stw.cfe.Batch#IIBDataSource" token="dsn.iibdb"/>
+      <override uri="stw.cfe.Batch#CashDataSourceTX" token="dsn.cfedb"/>
+      <override uri="stw.cfe.Batch#CashDataSourceNTX" token="dsn.cfedb2"/>
+      <override uri="stw.cfe.CanonicalRequestHandler#additionalInstances" default="0" token="CFE.CanonicalRequestHandler.additionalInstances"/>
+      <override uri="stw.cfe.CanonicalRequestHandler#IIBDataSource" token="dsn.iibdb"/>
+      <override uri="stw.cfe.CanonicalRequestHandler#CashDataSourceTX" token="dsn.cfedb"/>
+  </barOverrides>
+</config>

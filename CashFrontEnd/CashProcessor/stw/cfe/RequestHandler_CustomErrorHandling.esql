@@ -1,0 +1,93 @@
+BROKER SCHEMA stw.cfe
+
+/*
+ *
+ * The following cash validation status codes are defined
+ * 10: Validation failure (file format does not match specifications)
+ * 20: Reversal requested but file not found (not used in request handler)
+ * 30: Reversal requested but file already reversed (not used in request handler)
+ * 40: File is duplicate
+ * 50: 'Ignore duplicate' flag set but file is not a duplicate
+ * 70: Validation failure:  cash source type is not define in Broker control tables (no result for cross reference lookup 
+ * 99: Technical failure
+ */
+CREATE COMPUTE MODULE RequestHandler_CustomErrorHandling
+	CREATE FUNCTION Main() RETURNS BOOLEAN
+	BEGIN
+		
+		DECLARE evRef REFERENCE TO Environment.Variables;
+		DECLARE errRef REFERENCE TO evRef.Error;
+		
+		-- Check for known error type
+		CASE errRef.type
+		WHEN 10 THEN
+			-- Validation failure (file format does not match specifications)
+			IF errRef.longText='' THEN 
+				SET errRef.longText = evRef.exceptionDetails.insertErrorTxt;
+			END IF;
+		WHEN 40 THEN
+			-- File is duplicate
+		WHEN 50 THEN
+			-- 'Ignore duplicate' flag set but file is not a duplicate
+		WHEN 70 THEN
+			-- Validation failure: cash source type is not define in Broker control tables (no result for cross reference lookup )
+			
+		WHEN 99 THEN
+			-- Technical error
+			IF errRef.longText='' THEN 
+				SET errRef.longText = evRef.exceptionDetails.insertErrorTxt;
+			END IF;
+		ELSE
+			-- Unexpected error - treat as technical error
+			SET errRef.type=99;
+			SET errRef.category = 'UnknownError';
+			SET errRef.shortText = 'Unknown error detected';
+			SET errRef.longText = evRef.exceptionDetails.insertErrorTxt;
+		END CASE;
+		
+		-- Log a windows event (all failures are fatal)
+		LOG EVENT MESSAGE 2960 VALUES(
+		                BrokerName, ExecutionGroupLabel, ApplicationLabel, MessageFlowLabel, 
+		                COALESCE(errRef.category,'')||'('||CAST(errRef.type AS CHAR)||')', 
+		                errRef.shortText, 
+		                'Filename:'||COALESCE(evRef.fileName,'NULL'), 
+		                'InSource:'||COALESCE(evRef.inSource,'NULL'), 
+		                errRef.longText, 
+		                null);
+		
+		
+		-- Insert into TCH012
+		INSERT INTO Database.TCH012PAYFILEERROR
+			 (ID_ERROR, NM_FILE, CD_SOURCE, DT_RECEIVED, NO_SEQUENCE, TXT_ERROR)
+		VALUES
+		 	 (GetNextSequence('QCH012PAYFILEERROR'), 
+		 	 evRef.fileName , 
+		 	 COALESCE(evRef.outSource, evRef.inSource), 
+		 	 evRef.dateFileReceived, 
+		 	 0,
+		 	 LEFT(COALESCE(errRef.category,'') || ' ' ||COALESCE(errRef.shortText,'') || ' ' || COALESCE(errRef.longText,''),2000)); 	
+	
+		-- Update TCH001
+		UPDATE Database.TCH001PAYFILELOG AS p
+		  SET NM_FILE = evRef.fileName,
+		  	  DT_RECEIVED = evRef.dateFileReceived,
+		  	  CD_SOURCE=COALESCE(evRef.outSource, evRef.inSource),
+			  NO_DAILYSEQ=0,
+			  TS_VALIDATED=evRef.validationTimestamp,
+			  CD_VALIDATION=errRef.type,
+			  NO_ITEMS_SUBMITTED=0,
+			  TP_RUN=evRef.runMode
+		WHERE p.ID_LOG=evRef.fileId;
+		
+		
+		-- Update error handler environment fields to stop known errors generating further exceptions and messages
+		SET evRef.ErrorHandler.action = 'E';
+		-- Prevent a generic MQ error/warning message being generated for known errors
+		--  NB This also stops generic error handler from raising any windows events.
+		SET evRef.exceptionThrown = 'Y' ;
+		
+		RETURN TRUE;
+	END;
+
+
+END MODULE;

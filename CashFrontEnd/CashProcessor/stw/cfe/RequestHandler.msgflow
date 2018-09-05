@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ecore:EPackage xmi:version="2.0" xmlns:xmi="http://www.omg.org/XMI" xmlns:ComIbmCompute.msgnode="ComIbmCompute.msgnode" xmlns:ComIbmDatabase.msgnode="ComIbmDatabase.msgnode" xmlns:ComIbmMQInput.msgnode="ComIbmMQInput.msgnode" xmlns:ComIbmMQOutput.msgnode="ComIbmMQOutput.msgnode" xmlns:ComIbmResetContentDescriptor.msgnode="ComIbmResetContentDescriptor.msgnode" xmlns:ecore="http://www.eclipse.org/emf/2002/Ecore" xmlns:eflow="http://www.ibm.com/wbi/2005/eflow" xmlns:stw_exception_rollbackErrorHandler.subflow="stw/exception/rollbackErrorHandler.subflow"
+    xmlns:utility="http://www.ibm.com/wbi/2005/eflow_utility" nsURI="stw/cfe/RequestHandler.msgflow" nsPrefix="stw_cfe_RequestHandler.msgflow">
+  <eClassifiers xmi:type="eflow:FCMComposite" name="FCMComposite_1">
+    <eSuperTypes href="http://www.ibm.com/wbi/2005/eflow#//FCMBlock"/>
+    <eStructuralFeatures xmi:type="ecore:EAttribute" xmi:id="Property.IIBDataSource" name="IIBDataSource" defaultValueLiteral="DEID">
+      <eType xmi:type="ecore:EDataType" href="http://www.eclipse.org/emf/2002/Ecore#//EString"/>
+    </eStructuralFeatures>
+    <eStructuralFeatures xmi:type="ecore:EAttribute" xmi:id="Property.CashDataSourceNTX" name="CashDataSourceNTX" defaultValueLiteral="CASHDB2">
+      <eType xmi:type="ecore:EDataType" href="http://www.eclipse.org/emf/2002/Ecore#//EString"/>
+    </eStructuralFeatures>
+    <eStructuralFeatures xmi:type="ecore:EAttribute" xmi:id="Property.CashDataSourceTX" name="CashDataSourceTX" defaultValueLiteral="CASHDB">
+      <eType xmi:type="ecore:EDataType" href="http://www.eclipse.org/emf/2002/Ecore#//EString"/>
+    </eStructuralFeatures>
+    <translation xmi:type="utility:TranslatableString" key="RequestHandler" bundleName="stw/cfe/RequestHandler" pluginId="CashProcessor"/>
+    <colorGraphic16 xmi:type="utility:GIFFileGraphic" resourceName="platform:/plugin/CashProcessor/icons/full/obj16/RequestHandler.gif"/>
+    <colorGraphic32 xmi:type="utility:GIFFileGraphic" resourceName="platform:/plugin/CashProcessor/icons/full/obj30/RequestHandler.gif"/>
+    <shortDescription xmi:type="utility:ConstantString" string="Process new cash requests"/>
+    <longDescription xmi:type="utility:ConstantString" string="Process new cash files within MQ messages.&#xD;&#xA;Files will be validated and cononical cash item messages delivered to the canonical processor flow.&#xD;&#xA;Batch input is restricted to a single instance.&#xD;&#xA;NRT input can have additional instances set via deployment process.&#xD;&#xA;"/>
+    <composition>
+      <nodes xmi:type="ComIbmMQInput.msgnode:FCMComposite_1" xmi:id="FCMComposite_1_1" location="42,121" queueName="STW.CFE.BATCH.REQUEST" componentLevel="node">
+        <translation xmi:type="utility:ConstantString" string="MQIn_BatchRequestQ"/>
+        <longDescription xmi:type="utility:ConstantString" string="Additional instances set to 'use pool associated with node' and value of zero.&#xD;&#xA;This way only one instance of the batch handler will start!"/>
+      </nodes>
+      <nodes xmi:type="ComIbmMQOutput.msgnode:FCMComposite_1" xmi:id="FCMComposite_1_2" location="626,41" queueName="STW.CFE.CANONICAL.REQUEST" transactionMode="yes" newMsgId="true">
+        <translation xmi:type="utility:ConstantString" string="MQOut_CanonicalCashHandler"/>
+      </nodes>
+      <nodes xmi:type="ComIbmCompute.msgnode:FCMComposite_1" xmi:id="FCMComposite_1_5" location="458,127" dataSource="DEID" transaction="commit" computeExpression="esql://routine/stw.cfe#RequestHandler_Initialise.Main" computeMode="destinationAndMessage">
+        <translation xmi:type="utility:ConstantString" string="Initialise"/>
+        <longDescription xmi:type="utility:ConstantString" string="Initialises Environment variables and loads config and control data.&#xD;&#xA;Under normal running conditions control data is loaded into long-running cache (shared variable).&#xD;&#xA;In 'debug' mode control data is not cached and will be retrieved from the IIB database on demand.&#xD;&#xA;"/>
+      </nodes>
+      <nodes xmi:type="ComIbmCompute.msgnode:FCMComposite_1" xmi:id="FCMComposite_1_6" location="557,128" computeExpression="esql://routine/stw.cfe#RequestHandler_ProcessFile.Main" computeMode="destinationAndMessage">
+        <translation xmi:type="utility:ConstantString" string="ProcessFile"/>
+        <longDescription xmi:type="utility:ConstantString" string="The datasource for this node is linked to the IIB database.&#xD;&#xA;Under normal running conditions this node does not need access to the database.&#xD;&#xA;However, when running in 'debug' mode control data is read from the database rather than from long-running cache.&#xD;&#xA;If control data was loaded into cache while debugging then each breakpoint would cause thousands of items of data to be downloaded to the toolkit making it unusable.&#xD;&#xA;"/>
+      </nodes>
+      <nodes xmi:type="ComIbmDatabase.msgnode:FCMComposite_1" xmi:id="FCMComposite_1_3" location="334,126" dataSource="CASHDB2" statement="esql://routine/stw.cfe#RequestHandler_LogNewCashFile.Main" transaction="commit">
+        <translation xmi:type="utility:ConstantString" string="LogNewCashFile"/>
+        <shortDescription xmi:type="utility:ConstantString" string="Log to cash database (not transactional)"/>
+        <longDescription xmi:type="utility:ConstantString" string="This step is carried out separately from 'Initialiase' in order to separate out datasource requirements.&#xD;&#xA;LogNewCashFile needs to write to cash database (transaction mode = commit)&#xD;&#xA;Initialise needs to read from IIB database (all queries to IIB database are read only so transaction mode is not relevant).&#xD;&#xA;"/>
+      </nodes>
+      <nodes xmi:type="ComIbmDatabase.msgnode:FCMComposite_1" xmi:id="FCMComposite_1_4" location="648,129" dataSource="CASHDB" statement="esql://routine/stw.cfe#RequestHandler_UpdateCashTables.Main">
+        <translation xmi:type="utility:ConstantString" string="UpdateCashTables"/>
+        <shortDescription xmi:type="utility:ConstantString" string="Update cash database (transactional)"/>
+      </nodes>
+      <nodes xmi:type="ComIbmResetContentDescriptor.msgnode:FCMComposite_1" xmi:id="FCMComposite_1_9" location="219,122" messageDomain="BLOB" resetMessageDomain="true" resetMessageSet="true" resetMessageType="true" resetMessageFormat="true">
+        <translation xmi:type="utility:ConstantString" string="RCD_BLOB"/>
+        <longDescription xmi:type="utility:ConstantString" string="Convert content descriptor to BLOB  to allow it to be stored as a blob in the environment and to prevent IIB from attempting to parse the message too early."/>
+      </nodes>
+      <nodes xmi:type="ComIbmMQInput.msgnode:FCMComposite_1" xmi:id="FCMComposite_1_11" location="33,268" queueName="STW.CFE.NRT.REQUEST">
+        <translation xmi:type="utility:ConstantString" string="MQIn_RealTimeRequestQ"/>
+        <longDescription xmi:type="utility:ConstantString" string="Additional instances set to 'use pool associated with message flow' &#xD;&#xA;This way, all additional instances set for the message flow will be assigned to the NRT handler.&#xD;&#xA;&#xD;&#xA;NB Ensure the MQ queue name containts .NRT. as this is used to identify whether a request came from NRT queue or BATCH queue.&#xD;&#xA;If it doesn't then the code in CommonProcedures.esql will default to assuming BATCH request."/>
+      </nodes>
+      <nodes xmi:type="stw_exception_rollbackErrorHandler.subflow:FCMComposite_1" xmi:id="FCMComposite_1_13" location="193,274">
+        <translation xmi:type="utility:ConstantString" string="rollbackErrorHandler"/>
+      </nodes>
+      <nodes xmi:type="ComIbmCompute.msgnode:FCMComposite_1" xmi:id="FCMComposite_1_14" location="329,274" transaction="commit" computeExpression="esql://routine/stw.cfe#RequestHandler_CustomErrorHandling.Main">
+        <translation xmi:type="utility:ConstantString" string="CustomErrorHandling"/>
+        <longDescription xmi:type="utility:ConstantString" string="Error handling specifically for CFE.&#xD;&#xA;Ensures cash tables are correctly updated and prevents generic MQ error/warning messages being created by RollBackErrorHandler.&#xD;&#xA;"/>
+      </nodes>
+      <connections xmi:type="eflow:FCMConnection" xmi:id="FCMConnection_1" targetNode="FCMComposite_1_2" sourceNode="FCMComposite_1_6" sourceTerminalName="OutTerminal.out1" targetTerminalName="InTerminal.in"/>
+      <connections xmi:type="eflow:FCMConnection" xmi:id="FCMConnection_7" targetNode="FCMComposite_1_4" sourceNode="FCMComposite_1_6" sourceTerminalName="OutTerminal.out" targetTerminalName="InTerminal.in"/>
+      <connections xmi:type="eflow:FCMConnection" xmi:id="FCMConnection_6" targetNode="FCMComposite_1_5" sourceNode="FCMComposite_1_3" sourceTerminalName="OutTerminal.out" targetTerminalName="InTerminal.in"/>
+      <connections xmi:type="eflow:FCMConnection" xmi:id="FCMConnection_8" targetNode="FCMComposite_1_6" sourceNode="FCMComposite_1_5" sourceTerminalName="OutTerminal.out" targetTerminalName="InTerminal.in"/>
+      <connections xmi:type="eflow:FCMConnection" xmi:id="FCMConnection_11" targetNode="FCMComposite_1_9" sourceNode="FCMComposite_1_1" sourceTerminalName="OutTerminal.out" targetTerminalName="InTerminal.in"/>
+      <connections xmi:type="eflow:FCMConnection" xmi:id="FCMConnection_12" targetNode="FCMComposite_1_9" sourceNode="FCMComposite_1_11" sourceTerminalName="OutTerminal.out" targetTerminalName="InTerminal.in"/>
+      <connections xmi:type="eflow:FCMConnection" xmi:id="FCMConnection_10" targetNode="FCMComposite_1_3" sourceNode="FCMComposite_1_9" sourceTerminalName="OutTerminal.out" targetTerminalName="InTerminal.in"/>
+      <connections xmi:type="eflow:FCMConnection" xmi:id="FCMConnection_14" targetNode="FCMComposite_1_13" sourceNode="FCMComposite_1_1" sourceTerminalName="OutTerminal.catch" targetTerminalName="InTerminal.Input"/>
+      <connections xmi:type="eflow:FCMConnection" xmi:id="FCMConnection_15" targetNode="FCMComposite_1_14" sourceNode="FCMComposite_1_13" sourceTerminalName="OutTerminal.Output" targetTerminalName="InTerminal.in"/>
+      <connections xmi:type="eflow:FCMConnection" xmi:id="FCMConnection_2" targetNode="FCMComposite_1_13" sourceNode="FCMComposite_1_11" sourceTerminalName="OutTerminal.catch" targetTerminalName="InTerminal.Input"/>
+    </composition>
+    <propertyOrganizer>
+      <propertyDescriptor groupName="Group.Basic" configurable="true" describedAttribute="Property.IIBDataSource">
+        <propertyName xmi:type="utility:TranslatableString" key="Property.IIBDataSource" bundleName="stw/cfe/RequestHandler" pluginId="CashProcessor"/>
+        <propertyDescriptor groupName="Group.Basic" configurable="true" describedAttribute="Property.CashDataSourceNTX">
+          <propertyName xmi:type="utility:TranslatableString" key="Property.CashDataSourceNTX" bundleName="stw/cfe/RequestHandler" pluginId="CashProcessor"/>
+          <propertyDescriptor groupName="Group.Basic" configurable="true" describedAttribute="Property.CashDataSourceTX">
+            <propertyName xmi:type="utility:TranslatableString" key="Property.CashDataSourceTX" bundleName="stw/cfe/RequestHandler" pluginId="CashProcessor"/>
+          </propertyDescriptor>
+        </propertyDescriptor>
+      </propertyDescriptor>
+    </propertyOrganizer>
+    <attributeLinks promotedAttribute="Property.IIBDataSource" overriddenNodes="FCMComposite_1_5">
+      <overriddenAttribute href="ComIbmCompute.msgnode#Property.dataSource"/>
+    </attributeLinks>
+    <attributeLinks promotedAttribute="Property.CashDataSourceNTX" overriddenNodes="FCMComposite_1_3">
+      <overriddenAttribute href="ComIbmDatabase.msgnode#Property.dataSource"/>
+    </attributeLinks>
+    <attributeLinks promotedAttribute="Property.CashDataSourceNTX" overriddenNodes="FCMComposite_1_6 FCMComposite_1_14">
+      <overriddenAttribute href="ComIbmCompute.msgnode#Property.dataSource"/>
+    </attributeLinks>
+    <attributeLinks promotedAttribute="Property.CashDataSourceTX" overriddenNodes="FCMComposite_1_4">
+      <overriddenAttribute href="ComIbmDatabase.msgnode#Property.dataSource"/>
+    </attributeLinks>
+    <stickyBoard/>
+  </eClassifiers>
+</ecore:EPackage>
